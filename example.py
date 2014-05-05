@@ -14,4 +14,17 @@ print ais.version
 app = ais.open_application('ais.gui.vs.es.VSES017App', kodAplikacie='VSES017')
 print app.active_dialog
 app.active_dialog.open()
+
+def print_components(container, indent=0):
+    for component in container.components:
+        is_container = hasattr(component, 'components')
+        print '  ' * indent + str(component)
+        if is_container:
+            if component.components:
+                print_components(component, indent=indent + 1)
+            else:
+                print '  ' * (indent + 1) + '<no children>'
+
+print_components(app.active_dialog)
+
 app.close()

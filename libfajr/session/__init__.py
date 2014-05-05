@@ -82,8 +82,8 @@ class WebUIEvent(object):
     def to_xml(self):
         E = ElementBuilder
         return (E('ev')(
-            E('dlgName')(self.dialog) if self.dialog is not None else None,
-            E('compName')(self.component) if self.component is not None else None,
+            E('dlgName')(self.dialog.name) if self.dialog is not None else None,
+            E('compName')(self.component.name) if self.component is not None else None,
             (E('event', {'class': self.class_name})
                 (*[E(name)(value) for name, value in self.fields.iteritems()]))
         )).create_element()
@@ -123,22 +123,124 @@ class WebUIProperties(object):
         return changed
 
 
-class WebUIMainDialog(object):
-    def __init__(self, app, name, title):
-        self.app = app
+class WebUIComponent(object):
+    def __init__(self, parent, name, type):
+        self.parent = parent
         self.name = name
-        self.title = title
+        self.type = type
+
+    def fire_event(self, event):
+        self.parent.fire_event(event)
+
+    def __str__(self):
+        return unicode(self).encode('UTF-8')
+
+    def __unicode__(self):
+        return u'component {} {}'.format(self.type, self.name)
+
+    @classmethod
+    def from_element(cls, parent, element):
+        return cls(parent, element.attrib['id'], element.attrib['jsct'])
+
+
+class WebUIContainer(WebUIComponent):
+    def __init__(self, *args, **kwargs):
+        super(WebUIContainer, self).__init__(*args, **kwargs)
         self.components = []
+        self.components_by_name = {}
+
+    def build_components(self, root_element):
+        def walk(element):
+            for child in element:
+                if 'jsct' in child.attrib:
+                    type = component_types.get(child.attrib['jsct'], WebUIContainer)
+                    component = type.from_element(self, child)
+                    if hasattr(component, 'components'):
+                        for child_component in component.components:
+                            self.components_by_name[child_component.name] = child_component
+                    self.components_by_name[component.name] = component
+                    self.components.append(component)
+                else:
+                    walk(child)
+        walk(root_element)
+
+    def __unicode__(self):
+        return u'container {} {}'.format(self.type, self.name)
+
+    @classmethod
+    def from_element(cls, parent, element):
+        component = super(WebUIContainer, cls).from_element(parent, element)
+        component.build_components(element)
+        return component
+
+
+class WebUILabel(WebUIComponent):
+    def __init__(self, *args, **kwargs):
+        super(WebUILabel, self).__init__(*args, **kwargs)
+        self.value = u''
+        self.name_for = ''
+
+    def __unicode__(self):
+        ret = u'{} \'{}\''.format(super(WebUILabel, self).__unicode__(), self.value)
+        if self.name_for:
+            ret += u' for={}'.format(self.name_for)
+        return ret
+
+    @classmethod
+    def from_element(cls, parent, element):
+        component = super(WebUILabel, cls).from_element(parent, element)
+        component.value = element.text or u''
+        component.name_for = element.attrib.get('for')
+        return component
+
+
+class WebUITextField(WebUIComponent):
+    def __init__(self, *args, **kwargs):
+        super(WebUITextField, self).__init__(*args, **kwargs)
+        self.value = u''
+        self.readonly = False
+
+    def __unicode__(self):
+        ret = u'{} \'{}\'{}'.format(super(WebUITextField, self).__unicode__(), self.value, u' readonly' if self.readonly else u'')
+        return ret
+
+    @classmethod
+    def from_element(cls, parent, element):
+        component = super(WebUITextField, cls).from_element(parent, element)
+        component.value = element.attrib.get('value', u'')
+        component.readonly = (element.attrib.get('_readonly') == 'true')
+        return component
+
+component_types = {
+    'popupMenu': WebUIContainer,
+    'panel': WebUIContainer,
+    'tabbedPane': WebUIContainer,
+
+    'menuItem': WebUIComponent,
+    'button': WebUIComponent,
+    'table': WebUIComponent,
+    'separator': WebUIComponent,
+    'textField': WebUITextField,
+    'action': WebUIComponent,
+    'valueInteractive': WebUIComponent,
+    'label': WebUILabel
+}
+
+
+class WebUIMainDialog(WebUIContainer):
+    def __init__(self, app, name, title):
+        super(WebUIMainDialog, self).__init__(app, name, 'body')
+        self.app = app
+        self.title = title
 
     def open(self):
         response = self.app.session.http.get(self.app.session.url.webui({'appId': self.app.id, 'form': self.name}))
         html = parse_html(response.text)
         body = select_html(html, '[jsct=body]')[0]
-        for component in select_html(body, '[jsct]'):
-            print component.attrib['jsct'], component.attrib['id'], component.attrib.get('title')
+        self.build_components(body)
 
     def fire_event(self, event):
-        event.dialog = self.name
+        event.dialog = self
         self.app.fire_event(event)
 
     def __repr__(self):
@@ -156,7 +258,6 @@ class WebUIApplication(object):
         self.closed = False
         self.properties = WebUIProperties('app')
         self._active_dialog = None
-
 
     def fire_event(self, event):
         self._events.append(event)
